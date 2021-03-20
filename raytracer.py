@@ -20,7 +20,7 @@ bl_info = {
 
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Vector, Matrix
 from math import sqrt, acos, cos, asin, sin
 
 def ray_cast(scene, origin, direction):
@@ -118,8 +118,6 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         # get light color
         light_color = np.array(light.data.color * light.data.energy / (4 * np.pi))
 
-        # TODO
-        # THIS IS BROKEN: 
         # Check light type
         if light.data.type == "AREA":
             # 1. calc light normal in world space
@@ -130,8 +128,6 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
             
             # 2. update the light color
             # we receive less light if we are at an angle to the light
-            # TODO
-            # should I be using dir_light_to_hit or hit_norm here?
             dir_light_to_hit = (hit_loc - light.location).normalized()
             light_angle = light_normal.normalized().dot(dir_light_to_hit)
             if light_angle < 0:
@@ -156,15 +152,10 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
             emit_loc_local = Vector((x, y, 0))
             
             # 4. transform the emitting location from local to global
-            # TODO left multiplying --> correct order?
             emit_loc_global = light.matrix_world @ emit_loc_local
-            #
-            # CHANGED ALL light.location to emit_loc_global...
-            # todo : check this is correct 
             
-
         # ----------
-        # TODO 1: Shadow Ray
+        # 1: Shadow Ray
         #
         # Read the lines of code above to see the variables that are already there, e.g. hit_loc.
         #
@@ -227,11 +218,10 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         #           light_dir: same as above
         #           view_dir: direction from the surface point to the viewer, the negative of ray_dir
         # ----------
-        # TODO 2.1: Blinn-Phong Shading -- Diffuse
+        # 2.1: Blinn-Phong Shading -- Diffuse
         #
         # calculate intensity of the light: I_light. 
         cos_theta = (light_dir.normalized()).dot(hit_norm.normalized())
-        #light_fall_off = 1 / light_color_vec.length_squared() # todo inverse square law or theta?
         mag = np.linalg.norm(light_vec)
         I_light = Vector(light_color / (mag * mag)).xyz
          
@@ -242,7 +232,7 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         #
         # re-run this script, and render the scene to check your result with checkpoint 2.1
         # ----------
-        # TODO 2.2: Blinn-Phong Shading -- Specular
+        # 2.2: Blinn-Phong Shading -- Specular
         #
         # calculate half_vector
         half_vector = ((light_dir.normalized() + ray_orig.normalized())*0.5).normalized()
@@ -253,7 +243,7 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         # ----------
 
     # ----------
-    # TODO 3: AMBIENT
+    # 3: AMBIENT
     #
     # if none of the lights hit the object, add the ambient component I_ambient to the pixel color
     # else, pass here
@@ -270,7 +260,7 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         color += I_ambient
 
     # ----------
-    # TODO 5: FRESNEL
+    # 5: FRESNEL
     #
     # if don't use fresnel, get reflectivity k_r directly
     reflectivity = mat.mirror_reflectivity
@@ -292,20 +282,15 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         incident_angle = ray_dir.normalized().dot(hit_norm.normalized())
         reflectivity = R_0 + (1 - R_0) * (1 - cos(incident_angle))**5 # reflectivity 
     
-    #
-    # re-run this script, and render the scene to check your result with checkpoint 5
-    # you won't see the effects of this until TODO 4 is also done
     # ----------
-
-    # ----------
-    # TODO 4: RECURSION
+    # 4: RECURSION
     #
     # if depth > 0, cast a reflected ray from current intersection point
     # with direction D_reflect to get the color contribution of the ray L_reflect
     # multiply L_reflect with reflectivity k_r, and add the result to the pixel color
     #
     # Equation for D_reflect is on lecture 6 slides
-    # Reflectivity k_r has been already declared in TODO 5 above
+    # Reflectivity k_r has been already declared in 5 above
     #
     # just like casting a shadow ray, we need to take care of self-occlusion here
     # remember to update depth
@@ -325,7 +310,7 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
         color += L_reflect 
 
     # ----------
-    # TODO 6: TRANSMISSION
+    # 6: TRANSMISSION
     #
     # if depth > 0, cast a transmitted ray from current intersection point
     # with direction D_transmit to get the color contribution of the ray L_transmit
@@ -355,10 +340,54 @@ def RT_trace_ray(scene, ray_orig, ray_dir, lights, depth=3):
             
             color += L_transmit * (1 - reflectivity) * mat.transmission
 
-    return color
+    #---------------------------------------------------------
+    #
+    # Indirect diffuse (color bleeding)
+    #
+    #--------------------------------------------------------
+    #
+    # 1. establish a local coord system with hit_norm as Z-axis
+    #
+    # initial x guess: 
+    z = hit_norm
+    x = Vector((0, 0, 1)) 
+    # or if x too close to Z, start with a different guess
+    xdotz = x.dot(z)
+    if xdotz > 0.9 or xdotz < -0.9:
+        x = Vector((0, 1, 0))
+    # make x perp to z (essentially Gram Schmit)
+    x = x - (x.dot(z) * z)
+    x = x.normalized()
+    y = z.cross(x)
+    # --------------------
+    # 2. sample a direction from the hemisphere oriented at [0, 0, 1]
+    #
+    # random sample point on hemisphere
+    r1 = np.random.rand() # uniformly sampled from 0 to 1
+    r2 = np.random.rand()
+    theta = r1
+    phi = r2 * 2 * np.pi
+    random_point = Vector((sin(theta)*cos(theta), sin(theta) * sin(phi), cos(theta)))
+
+    #
+    # 3. transform local sampled directions back to global coords
+    # 
+    transformation_matrix = Matrix((x, y, z))
+    global_ray_dir = random_point @ transformation_matrix
+    
+    #
+    # 4. calc color contribution
+    #
+    # cast ray in global ray direction to get the raw intensity
+    # indirect diffuse color will be that raw int * r1 to account for 
+    # face orientation, and then by diffuse_color to account for absorption
+    raw_intensity = RT_trace_ray(scene, hit_loc, global_ray_dir, lights, 1)
+    indirect_diffuse_color = raw_intensity * r1 * diffuse_color
+    
+    return color + indirect_diffuse_color
 
 
-def RT_render_scene(scene, width, height, depth, buf):
+def RT_render_scene(scene, width, height, depth, buf, sample_count):
     """Main function for rendering the scene
 
     Parameters
@@ -389,26 +418,53 @@ def RT_render_scene(scene, width, height, depth, buf):
     focal_length = scene.camera.data.lens / scene.camera.data.sensor_width
     aspect_ratio = height / width
 
-    # iterate through all the pixels, cast a ray for each pixel
-    for y in range(height):
-        # get screen space coordinate for y
-        screen_y = ((y - (height / 2)) / height) * aspect_ratio
-        for x in range(width):
-            # get screen space coordinate for x
-            screen_x = (x - (width / 2)) / width
-            # calculate the ray direction
-            ray_dir = Vector((screen_x, screen_y, -focal_length))
-            ray_dir.rotate(cam_orientation)
-            ray_dir = ray_dir.normalized()
-            # populate the RGB component of the buffer with ray tracing result
-            buf[y, x, 0:3] = RT_trace_ray(
-                scene, cam_location, ray_dir, scene_lights, depth
-            )
-            # populate the alpha component of the buffer
-            # to make the pixel not transparent
-            buf[y, x, 3] = 1
-        yield y
+    # new buffer for accumulating samples
+    # we loop over sample count and divide the buffer by current sample to 
+    # get final image (averaging)
+    sumbuf = np.zeros((height, width, 3))
+
+    # pre-compute offsets 
+    dx = 1 / width
+    dy = aspect_ratio / height
+    corput_x = [corput(i, 2) * dx for i in range(sample_count)]
+    corput_y = [corput(i, 3) * dy for i in range(sample_count)]
+
+    # iterate through all samples
+    for s in range(sample_count):
+        # iterate through all the pixels, cast a ray for each pixel
+        for y in range(height):
+            # get screen space coordinate for y
+            screen_y = ((y - (height / 2)) / height) * aspect_ratio
+            for x in range(width):
+                # get screen space coordinate for x
+                screen_x = (x - (width / 2)) / width
+                # calculate the ray direction
+                ray_dir = Vector((screen_x + corput_x[s], screen_y + corput_y[s], -focal_length))
+                ray_dir.rotate(cam_orientation)
+                ray_dir = ray_dir.normalized()
+                # populate the RGB component of the buffer with ray tracing result
+                sumbuf[y, x, 0:3] += RT_trace_ray(
+                    scene, cam_location, ray_dir, scene_lights, depth
+                )
+                
+                buf[y, x, 0:3] = sumbuf[y,x]/sample_count
+                
+                # populate the alpha component of the buffer
+                # to make the pixel not transparent
+                buf[y, x, 3] = 1
+                
+            yield y
     return buf
+
+
+def corput(n, base):
+    # generate a Van der Corput sequence between -0.5 and 0.5
+    q, denom = 0, 1
+    while n:
+        denom *= base
+        n, remainder = divmod(n, base)
+        q += remainder / denom
+    return q - 0.5
 
 
 # modified from https://docs.blender.org/api/current/bpy.types.RenderEngine.html
@@ -438,6 +494,9 @@ class SimpleRTRenderEngine(bpy.types.RenderEngine):
         self.size_x = int(scene.render.resolution_x * scale)
         self.size_y = int(scene.render.resolution_y * scale)
 
+        # sampling to prevent noise in the shadows from lights
+        self.samples = depsgraph.scene.simpleRT.samples
+        
         if self.is_preview:
             pass
         else:
@@ -464,7 +523,7 @@ class SimpleRTRenderEngine(bpy.types.RenderEngine):
 
         # start ray tracing
         update_cycle = int(10000 / width)
-        for y in RT_render_scene(scene, width, height, depth, buf):
+        for y in RT_render_scene(scene, width, height, depth, buf, self.samples):
 
             # print render time info
             elapsed = int(time.time() - start_time)
